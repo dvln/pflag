@@ -142,6 +142,7 @@ type FlagSet struct {
 	output            io.Writer // nil means stderr; use out() accessor
 	interspersed      bool      // allow interspersed option/non-option args
 	normalizeNameFunc func(f *FlagSet, name string) NormalizedName
+	defValueReparseOK bool
 }
 
 // A Flag represents the state of a flag.
@@ -288,7 +289,7 @@ func (f *FlagSet) Set(name, value string) error {
 	f.actual[normalName] = flag
 	flag.Changed = true
 	if len(flag.Deprecated) > 0 {
-		fmt.Fprintf(os.Stderr, "Flag --%s has been deprecated, %s\n", flag.Name, flag.Deprecated)
+		fmt.Fprintf(f.out(), "Flag --%s has been deprecated, %s\n", flag.Name, flag.Deprecated)
 	}
 	return nil
 }
@@ -420,12 +421,23 @@ func (f *FlagSet) VarP(value Value, name, shorthand, usage string) {
 	f.AddFlag(flag)
 }
 
+// SetDefValueReparseOK allows one to overwrite flags with new defaults if
+// desired, dangerous though when set to true so be cautious (ie: subcmds
+// can reuse/overwrite flags used in parent cmds and you won't know)
+func (f *FlagSet) SetDefValueReparseOK(value bool) {
+	f.defValueReparseOK = value
+}
+
 func (f *FlagSet) AddFlag(flag *Flag) {
 	// Call normalizeFlagName function only once
 	var normalizedFlagName NormalizedName = f.normalizeFlagName(flag.Name)
 
 	_, alreadythere := f.formal[normalizedFlagName]
 	if alreadythere {
+		if f.defValueReparseOK {
+			f.formal[f.normalizeFlagName(flag.Name)].DefValue = flag.DefValue
+			return
+		}
 		msg := fmt.Sprintf("%s flag redefined: %s", f.name, flag.Name)
 		fmt.Fprintln(f.out(), msg)
 		panic(msg) // Happens only if flags are declared with identical names
@@ -501,7 +513,7 @@ func (f *FlagSet) setFlag(flag *Flag, value string, origArg string) error {
 	f.actual[f.normalizeFlagName(flag.Name)] = flag
 	flag.Changed = true
 	if len(flag.Deprecated) > 0 {
-		fmt.Fprintf(os.Stderr, "Flag --%s has been deprecated, %s\n", flag.Name, flag.Deprecated)
+		fmt.Fprintf(f.out(), "Flag --%s has been deprecated, %s\n", flag.Name, flag.Deprecated)
 	}
 	return nil
 }
@@ -575,21 +587,44 @@ func (f *FlagSet) parseSingleShortArg(shorthands string, args []string) (outShor
 	return
 }
 
-func (f *FlagSet) parseShortArg(s string, args []string) (a []string, err error) {
+// parseShortArg takes a short argument which might be a list of short
+// arguments, eg: "-lDvR=file", where each letter is a "short" option.
+// The current method will detect/return the 1st error but it'll still
+// process all options and shove them into the config in case you still
+// want to act on them (maybe a -R=file records the output to a file and
+// -D is debuggingand -v is verbose debugging... so even if -l is a bad
+// option verbose debugging would kick on and the output could be recorded
+// to the specified file for easier troubleshooting and such)
+func (f *FlagSet) parseShortArg(s string, args []string) ([]string, error) {
+	var firstErr error
+	var a []string
+	var err error
 	a = args
 	shorthands := s[1:]
 
 	for len(shorthands) > 0 {
 		shorthands, a, err = f.parseSingleShortArg(shorthands, args)
-		if err != nil {
-			return
+		if err != nil && firstErr != nil {
+			firstErr = err
+			continue
 		}
 	}
-
-	return
+	return a, firstErr
 }
 
-func (f *FlagSet) parseArgs(args []string) (err error) {
+// parseArgs attempts to parse all the args given to the top level and
+// sub-level commands (both short and long options).  Currently it gives
+// an effort to record the first issue/error it encounter and return that
+// but it still attempts, even then, to pass through all the options it
+// can figure out and put them into the the flags data structure (in case
+// they are of use to the client tool).
+func (f *FlagSet) parseArgs(args []string) error {
+	var err error
+	var firstErr error
+	// with this loop we'll process all short/long args, even when a bad
+	// arg is detected we'll still finish examining all args in case things
+	// like debug/verbose/record/log are used so "good" settings can be honored,
+	// the first error detected (if any) is returned... or nil if no errors
 	for len(args) > 0 {
 		s := args[0]
 		args = args[1:]
@@ -597,7 +632,7 @@ func (f *FlagSet) parseArgs(args []string) (err error) {
 			if !f.interspersed {
 				f.args = append(f.args, s)
 				f.args = append(f.args, args...)
-				return nil
+				return firstErr // may be nil if no errors yet
 			}
 			f.args = append(f.args, s)
 			continue
@@ -612,11 +647,11 @@ func (f *FlagSet) parseArgs(args []string) (err error) {
 		} else {
 			args, err = f.parseShortArg(s, args)
 		}
-		if err != nil {
-			return
+		if err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
-	return
+	return firstErr
 }
 
 // Parse parses flag definitions from the argument list, which should not
@@ -652,7 +687,8 @@ func Parse() {
 	CommandLine.Parse(os.Args[1:])
 }
 
-// Whether to support interspersed option/non-option arguments.
+// SetInterspersed can be used to decide whether to support interspersed
+// option/non-option arguments (defaults to 'true' currently if not used)
 func SetInterspersed(interspersed bool) {
 	CommandLine.SetInterspersed(interspersed)
 }
@@ -662,21 +698,23 @@ func Parsed() bool {
 	return CommandLine.Parsed()
 }
 
-// The default set of command-line flags, parsed from os.Args.
+// CommandLine is the default set of command-line flags, parsed from os.Args.
 var CommandLine = NewFlagSet(os.Args[0], ExitOnError)
 
 // NewFlagSet returns a new, empty flag set with the specified name and
 // error handling property.
 func NewFlagSet(name string, errorHandling ErrorHandling) *FlagSet {
 	f := &FlagSet{
-		name:          name,
-		errorHandling: errorHandling,
-		interspersed:  true,
+		name:              name,
+		errorHandling:     errorHandling,
+		interspersed:      true,
+		defValueReparseOK: false,
 	}
 	return f
 }
 
-// Whether to support interspersed option/non-option arguments.
+// SetInterspersed decides whether to support interspersed option/non-option
+// arguments (defaults to 'true' currently if this is not used)
 func (f *FlagSet) SetInterspersed(interspersed bool) {
 	f.interspersed = interspersed
 }
