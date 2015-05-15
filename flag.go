@@ -600,11 +600,12 @@ func (f *FlagSet) parseShortArg(s string, args []string) ([]string, error) {
 	var a []string
 	var err error
 	a = args
+	// toss the leading '-' in front of the short option(s)
 	shorthands := s[1:]
 
 	for len(shorthands) > 0 {
 		shorthands, a, err = f.parseSingleShortArg(shorthands, args)
-		if err != nil && firstErr != nil {
+		if err != nil && firstErr == nil {
 			firstErr = err
 			continue
 		}
