@@ -116,6 +116,7 @@ type ErrorHandling int
 
 const (
 	ContinueOnError ErrorHandling = iota
+	IgnoreError
 	ExitOnError
 	PanicOnError
 )
@@ -484,6 +485,9 @@ func VarP(value Value, name, shorthand, usage string) {
 // failf prints to standard error a formatted error and usage message and
 // returns the error.
 func (f *FlagSet) failf(format string, a ...interface{}) error {
+	if f.errorHandling == IgnoreError {
+		return nil
+	}
 	err := fmt.Errorf(format, a...)
 	fmt.Fprintln(f.out(), err)
 	f.usage()
@@ -540,7 +544,7 @@ func (f *FlagSet) parseLongArg(s string, args []string) (a []string, err error) 
 	var value string
 	if len(split) == 1 {
 		if bv, ok := flag.Value.(boolFlag); !ok || !bv.IsBoolFlag() {
-			err = f.failf("flag needs an argument: %s", s)
+			err = f.failf("flag which needs an argument: %s", s)
 			return
 		}
 		value = "true"
@@ -565,6 +569,9 @@ func (f *FlagSet) parseSingleShortArg(shorthands string, args []string) (outShor
 		}
 		//TODO continue on error
 		err = f.failf("unknown shorthand flag: %q in -%s", c, shorthands)
+		if len(shorthands) > 2 && shorthands[1] == '=' {
+			outShorts = ""
+		}
 		return
 	}
 	var value string
@@ -580,7 +587,19 @@ func (f *FlagSet) parseSingleShortArg(shorthands string, args []string) (outShor
 		value = args[0]
 		outArgs = args[1:]
 	} else {
-		err = f.failf("flag needs an argument: %q in -%s", c, shorthands)
+		// Feature: allow for specifically config'd flags to optionally get
+		// args (as well as this, where some are required to be given args),
+		// if it's the optional arg class flag (not just booleans as today)
+		// then if no arg was given/found it would take the default for the
+		// flag setting and push that as the flag to use (ie: if the flag
+		// default differed from the tool default then we would effectively
+		// override the tool default with the flag default... and if it was
+		// a two-state thing and the user had changed the default via their
+		// config file for example then no arg could also mean "flip" to the
+		// opposing value trivially by having some way to say the default is
+		// the opposite of whatever the default/configfile/env setting is for
+		// this run... just a thought)
+		err = f.failf("flag which needs an argument: %q in -%s", c, shorthands)
 		return
 	}
 	err = f.setFlag(flag, value, shorthands)
@@ -665,6 +684,8 @@ func (f *FlagSet) Parse(arguments []string) error {
 	err := f.parseArgs(arguments)
 	if err != nil {
 		switch f.errorHandling {
+		case IgnoreError:
+			return nil
 		case ContinueOnError:
 			return err
 		case ExitOnError:
@@ -718,6 +739,19 @@ func NewFlagSet(name string, errorHandling ErrorHandling) *FlagSet {
 // arguments (defaults to 'true' currently if this is not used)
 func (f *FlagSet) SetInterspersed(interspersed bool) {
 	f.interspersed = interspersed
+}
+
+// ErrorHandling allows one to get the current type of error handling
+// that is being done with the given FlagSet pointer.
+func (f *FlagSet) ErrorHandling() ErrorHandling {
+	return f.errorHandling
+}
+
+// SetErrorHandling allows one to adjust error handling of a Flagset
+// if desired, may use in combo with ErrorHandling() to get the current
+// value before shifting it (so one can shift it back if needed).
+func (f *FlagSet) SetErrorHandling(errHandling ErrorHandling) {
+	f.errorHandling = errHandling
 }
 
 // Init sets the name and error handling property for a flag set.
