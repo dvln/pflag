@@ -18,7 +18,9 @@ func (s *stringValue) Type() string {
 	return "string"
 }
 
-func (s *stringValue) String() string { return fmt.Sprintf("%s", *s) }
+func (s *stringValue) String() string {
+	return fmt.Sprintf("%s", *s)
+}
 
 // StringVar defines a string flag with specified name, default value, and usage string.
 // The argument p points to a string variable in which to store the value of the flag.

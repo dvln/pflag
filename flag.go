@@ -338,7 +338,11 @@ func (f *FlagSet) FlagUsages() string {
 		} else {
 			format = "   %s   " + format
 		}
-		fmt.Fprintf(x, format, flag.Shorthand, flag.Name, flag.DefValue, flag.Usage)
+		//CONSIDER: this was using flag.DefValue but that resulted in
+		//       incorrect usage values, flag.Value is right... but might be
+		//       missing something, for now just flip it but keep this here
+		//fmt.Fprintf(x, format, flag.Shorthand, flag.Name, flag.DefValue, flag.Usage)
+		fmt.Fprintf(x, format, flag.Shorthand, flag.Name, flag.Value, flag.Usage)
 	})
 
 	return x.String()
