@@ -441,6 +441,7 @@ func (f *FlagSet) AddFlag(flag *Flag) {
 	if alreadythere {
 		if f.defValueReparseOK {
 			f.formal[f.normalizeFlagName(flag.Name)].DefValue = flag.DefValue
+			f.formal[f.normalizeFlagName(flag.Name)].Value = flag.Value
 			return
 		}
 		msg := fmt.Sprintf("%s flag redefined: %s", f.name, flag.Name)
